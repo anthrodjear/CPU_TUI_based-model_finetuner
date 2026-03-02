@@ -116,7 +116,6 @@ class Trainer(LoggerMixin):
     
     def _find_ollama_gguf(self, model_name: str) -> Optional[str]:
         """Find GGUF file for an Ollama model."""
-        import subprocess
         import os
         from pathlib import Path
         
@@ -130,33 +129,26 @@ class Trainer(LoggerMixin):
         if not ollama_models.exists():
             return None
         
+        search_terms = [
+            model_name.lower(),
+            model_name.split('/')[-1].lower(),
+        ]
+        
         model_gguf = None
+        max_size = 0
+        
         for gguf in ollama_models.rglob('*.gguf'):
-            if model_name.lower() in str(gguf).lower():
-                if model_gguf is None or gguf.stat().st_size > model_gguf.stat().st_size:
-                    model_gguf = gguf
+            gguf_name = str(gguf).lower()
+            for term in search_terms:
+                if term in gguf_name:
+                    size = gguf.stat().st_size
+                    if size > max_size:
+                        max_size = size
+                        model_gguf = gguf
+                        break
         
         if model_gguf:
             return str(model_gguf)
-        
-        try:
-            result = subprocess.run(
-                ['ollama', 'list'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if model_name in line:
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            model_id = parts[1]
-                            manifest_path = ollama_models / 'manifests' / 'registry.ollama.ai' / model_name
-                            if not model_name.startswith('library/'):
-                                manifest_path = ollama_models / 'manifests' / 'registry.ollama.ai' / 'library' / model_name
-        except Exception as e:
-            self.logger.debug(f"Could not run ollama list: {e}")
         
         return None
     
