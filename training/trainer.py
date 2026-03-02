@@ -86,6 +86,7 @@ class Trainer(LoggerMixin):
         """Resolve model path - handle Ollama models, GGUF files, and HuggingFace paths."""
         import subprocess
         import os
+        from pathlib import Path
         
         path_str = str(model_path)
         
@@ -99,8 +100,13 @@ class Trainer(LoggerMixin):
                 self.logger.info(f"Resolved Ollama GGUF: {path_str} -> {ollama_path}")
                 return ollama_path
             
-            self.logger.warning(f"Cannot find GGUF for {model_name}, trying as HF model")
-            return path_str
+            all_gguf = self._find_all_gguf()
+            if all_gguf:
+                self.logger.warning(f"Cannot find specific GGUF for {model_name}, using first available: {all_gguf[0]}")
+                return all_gguf[0]
+            
+            self.logger.error(f"No GGUF files found. Please provide a direct path to the GGUF file.")
+            raise ValueError(f"Cannot find GGUF for {model_name}. Provide --model with a direct .gguf file path instead.")
         
         if ':' in path_str and not os.path.exists(path_str):
             model_name = path_str.split(':')[0]
@@ -108,11 +114,44 @@ class Trainer(LoggerMixin):
             if ollama_path:
                 self.logger.info(f"Resolved Ollama model: {path_str} -> {ollama_path}")
                 return ollama_path
+            
+            all_gguf = self._find_all_gguf()
+            if all_gguf:
+                self.logger.warning(f"Cannot find GGUF for {model_name}, using: {all_gguf[0]}")
+                return all_gguf[0]
         
         if os.path.exists(path_str):
             return os.path.abspath(path_str)
         
+        all_gguf = self._find_all_gguf()
+        if all_gguf:
+            self.logger.warning(f"Using first available GGUF: {all_gguf[0]}")
+            return all_gguf[0]
+        
         return model_path
+    
+    def _find_all_gguf(self) -> list:
+        """Find all GGUF files in Ollama models directory."""
+        from pathlib import Path
+        import os
+        
+        if os.name == 'nt':
+            base = Path(os.environ.get('USERPROFILE', '~'))
+        else:
+            base = Path.home()
+        
+        ollama_models = base / '.ollama' / 'models'
+        
+        if not ollama_models.exists():
+            return []
+        
+        gguf_files = sorted(
+            ollama_models.rglob('*.gguf'),
+            key=lambda x: x.stat().st_size,
+            reverse=True
+        )
+        
+        return [str(g) for g in gguf_files if g.stat().st_size > 100 * 1024 * 1024]
     
     def _find_ollama_gguf(self, model_name: str) -> Optional[str]:
         """Find GGUF file for an Ollama model."""
@@ -173,18 +212,57 @@ class Trainer(LoggerMixin):
         lora_config: Optional[LoRAConfig] = None
     ):
         """Prepare model for training with LoRA."""
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        
         resolved_path = self._resolve_model_path(model_path)
         self.logger.info(f"Loading model from: {resolved_path}")
         
-        self.tokenizer = AutoTokenizer.from_pretrained(resolved_path)
+        if resolved_path.lower().endswith('.gguf'):
+            self._prepare_gguf_model(resolved_path, lora_config)
+        else:
+            self._prepare_hf_model(resolved_path, lora_config)
+        
+        return self.model, self.tokenizer
+    
+    def _prepare_gguf_model(self, gguf_path: str, lora_config: Optional[LoRAConfig] = None):
+        """Load GGUF model using llama-cpp-python for training."""
+        try:
+            from llama_cpp import Llama
+            from transformers import PreTrainedTokenizerFast
+        except ImportError:
+            self.logger.error("llama-cpp-python not installed. Install with: pip install llama-cpp-python")
+            raise ImportError("llama-cpp-python required for GGUF training. Run: pip install llama-cpp-python")
+        
+        self.logger.info(f"Loading GGUF model: {gguf_path}")
+        
+        self.llm = Llama(
+            model_path=gguf_path,
+            n_ctx=512,
+            n_threads=self.config.get('cpu', {}).get('num_threads', 4),
+            use_mmap=True,
+            use_mlock=False,
+        )
+        
+        tokenizer = self.llm.tokenizer()
+        self.tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer)
+        
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        self.logger.warning("GGUF model loaded. Note: LoRA training with GGUF requires unsloth or manual implementation.")
+        self.logger.info("For full LoRA support with GGUF, please convert to HuggingFace format first.")
+        
+        self.model = None
+    
+    def _prepare_hf_model(self, model_path: str, lora_config: Optional[LoRAConfig] = None):
+        """Load HuggingFace model for training."""
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
         model = AutoModelForCausalLM.from_pretrained(
-            resolved_path,
+            model_path,
             torch_dtype=torch.float32,
             device_map='cpu',
             low_cpu_mem_usage=True
@@ -192,6 +270,27 @@ class Trainer(LoggerMixin):
         
         if lora_config is None:
             lora_config = self.lora_config_manager.get_config()
+        
+        from peft import LoraConfig as PEFTLoRAConfig, get_peft_model, TaskType
+        
+        task_type = TaskType.CAUSAL_LM
+        if lora_config.task_type == "SEQ_CLS":
+            task_type = TaskType.SEQ_CLS
+        
+        peft_config = PEFTLoRAConfig(
+            r=lora_config.r,
+            lora_alpha=lora_config.lora_alpha,
+            lora_dropout=lora_config.lora_dropout,
+            target_modules=lora_config.target_modules,
+            bias=lora_config.bias,
+            task_type=task_type,
+            inference_mode=lora_config.inference_mode,
+            modules_to_save=lora_config.modules_to_save
+        )
+        
+        self.model = get_peft_model(model, peft_config)
+        
+        self.model.print_trainable_parameters()
         
         from peft import LoraConfig as PEFTLoRAConfig, get_peft_model, TaskType
         
