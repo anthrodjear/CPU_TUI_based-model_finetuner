@@ -144,10 +144,15 @@ class Trainer(LoggerMixin):
             if len(part) > 3:
                 search_terms.add(part.lower())
         
+        self.logger.debug(f"Searching GGUF with terms: {search_terms}")
+        
+        gguf_files = list(ollama_models.rglob('*.gguf'))
+        self.logger.debug(f"Found GGUF files: {[g.name for g in gguf_files]}")
+        
         model_gguf = None
         max_size = 0
         
-        for gguf in ollama_models.rglob('*.gguf'):
+        for gguf in gguf_files:
             gguf_name = str(gguf).lower()
             for term in search_terms:
                 if term in gguf_name and len(term) > 3:
