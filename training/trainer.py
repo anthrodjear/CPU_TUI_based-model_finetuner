@@ -117,6 +117,7 @@ class Trainer(LoggerMixin):
     def _find_ollama_gguf(self, model_name: str) -> Optional[str]:
         """Find GGUF file for an Ollama model."""
         import os
+        import re
         from pathlib import Path
         
         if os.name == 'nt':
@@ -129,10 +130,19 @@ class Trainer(LoggerMixin):
         if not ollama_models.exists():
             return None
         
-        search_terms = [
-            model_name.lower(),
-            model_name.split('/')[-1].lower(),
-        ]
+        search_terms = set()
+        search_terms.add(model_name.lower())
+        search_terms.add(model_name.split('/')[-1].lower())
+        
+        model_base = model_name.split('/')[-1]
+        match = re.match(r'^([a-zA-Z0-9]+[-_]?[0-9]*[a-zA-Z0-9]*)', model_base)
+        if match:
+            search_terms.add(match.group(1).lower())
+        
+        key_parts = re.findall(r'[a-zA-Z][a-zA-Z0-9]*[-_]?[0-9]*\.?[0-9]*[bB]?', model_base)
+        for part in key_parts:
+            if len(part) > 3:
+                search_terms.add(part.lower())
         
         model_gguf = None
         max_size = 0
@@ -140,7 +150,7 @@ class Trainer(LoggerMixin):
         for gguf in ollama_models.rglob('*.gguf'):
             gguf_name = str(gguf).lower()
             for term in search_terms:
-                if term in gguf_name:
+                if term in gguf_name and len(term) > 3:
                     size = gguf.stat().st_size
                     if size > max_size:
                         max_size = size
