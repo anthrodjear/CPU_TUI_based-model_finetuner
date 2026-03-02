@@ -1,0 +1,120 @@
+version: "1.0.0"
+
+system:
+  name: "Ollama CPU FineTune Studio"
+  log_dir: "./logs"
+  checkpoint_dir: "./checkpoints"
+  output_dir: "./output"
+  cache_dir: "./cache"
+
+training:
+  mode: "lora"  # Only LoRA allowed
+  default_batch_size: 2
+  default_max_seq_length: 512
+  default_num_epochs: 3
+  default_learning_rate: 3e-4
+  default_warmup_steps: 100
+  gradient_accumulation_steps: 4
+  eval_steps: 100
+  save_steps: 200
+  logging_steps: 10
+  dataloader_num_workers: 0
+  use_gradient_checkpointing: true
+  use_flash_attention: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+  inference_mode: false
+
+resource_presets:
+  safe:
+    max_memory_gb: 8
+    batch_size: 1
+    max_seq_length: 512
+    lora_r: 4
+    gradient_accumulation: 8
+  balanced:
+    max_memory_gb: 12
+    batch_size: 2
+    max_seq_length: 512
+    lora_r: 8
+    gradient_accumulation: 4
+  aggressive:
+    max_memory_gb: 14
+    batch_size: 2
+    max_seq_length: 768
+    lora_r: 16
+    gradient_accumulation: 2
+
+memory:
+  safety_margin: 0.8
+  warn_threshold: 0.85
+  critical_threshold: 0.95
+
+cpu:
+  num_threads: null  # null = auto-detect
+  affinity: null
+
+model_detection:
+  ollama_models_path: null  # null = auto-detect
+  scan_subdirs: true
+  min_model_size_mb: 100
+
+dataset:
+  supported_formats:
+    - "json"
+    - "jsonl"
+    - "txt"
+  default_instruction_template: "instruction"
+  default_input_field: "input"
+  default_output_field: "output"
+  min_samples_warning: 100
+  max_tokens_warning: 2048
+
+visualization:
+  update_interval_ms: 500
+  console_theme: "default"
+  show_graphs: true
+  graph_points: 100
+  save_plots: true
+
+export:
+  gguf_quantization:
+    - "q4_0"
+    - "q4_1"
+    - "q5_0"
+    - "q5_1"
+    - "q8_0"
+  default_quantization: "q5_1"
+  merge_in_base_model: true
+
+ollama:
+  model_install_path: null  # null = auto-detect
+  auto_install: true
+  modelfile_template: |
+    FROM {{base_model}}
+    PARAMETER temperature {{temperature}}
+    PARAMETER top_p {{top_p}}
+    PARAMETER top_k {{top_k}}
+    PARAMETER num_ctx {{num_ctx}}
+    PARAMETER num_gpu 0
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_enabled: true
+  console_enabled: true
+  metrics_file: "metrics.csv"
+  training_state_file: "training_state.json"

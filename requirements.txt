@@ -1,0 +1,11 @@
+torch>=2.0.0
+transformers>=4.30.0
+peft>=0.4.0
+accelerate>=0.20.0
+psutil>=5.9.0
+pyyaml>=6.0
+rich>=13.0.0
+textual>=0.24.0
+matplotlib>=3.7.0
+numpy>=1.24.0
+safetensors>=0.3.0
