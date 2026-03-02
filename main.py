@@ -220,9 +220,14 @@ Examples:
     parser_scan = subparsers.add_parser('scan', help='Scan for Ollama models')
     parser_scan.set_defaults(func=cmd_scan_models)
     
-    parser_analyze = subparsers.add_parser('analyze-dataset', help='Analyze dataset')
+    parser_analyze = subparsers.add_parser('analyze-dataset', help='Analyze dataset', aliases=['analyse-dataset'])
     parser_analyze.add_argument('dataset', help='Path to dataset file')
     parser_analyze.set_defaults(func=cmd_analyze_dataset)
+    
+    # Also handle analyse-dataset as alias
+    parser_analyse = subparsers.add_parser('analyse-dataset', help='Analyze dataset (alias)', aliases=[])
+    parser_analyse.add_argument('dataset', help='Path to dataset file')
+    parser_analyse.set_defaults(func=cmd_analyze_dataset)
     
     parser_system = subparsers.add_parser('system-info', help='Show system information')
     parser_system.set_defaults(func=cmd_system_info)

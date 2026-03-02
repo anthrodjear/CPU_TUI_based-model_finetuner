@@ -82,6 +82,84 @@ class Trainer(LoggerMixin):
         
         self.logger.info("CPU-only mode enabled")
     
+    def _resolve_model_path(self, model_path: str) -> str:
+        """Resolve model path - handle Ollama models, GGUF files, and HuggingFace paths."""
+        import subprocess
+        import os
+        
+        path_str = str(model_path)
+        
+        if path_str.startswith('hf.co/'):
+            model_name = path_str.replace('hf.co/', '')
+            if ':' in model_name:
+                model_name = model_name.split(':')[0]
+            
+            ollama_path = self._find_ollama_gguf(model_name)
+            if ollama_path:
+                self.logger.info(f"Resolved Ollama GGUF: {path_str} -> {ollama_path}")
+                return ollama_path
+            
+            self.logger.warning(f"Cannot find GGUF for {model_name}, trying as HF model")
+            return path_str
+        
+        if ':' in path_str and not os.path.exists(path_str):
+            model_name = path_str.split(':')[0]
+            ollama_path = self._find_ollama_gguf(model_name)
+            if ollama_path:
+                self.logger.info(f"Resolved Ollama model: {path_str} -> {ollama_path}")
+                return ollama_path
+        
+        if os.path.exists(path_str):
+            return os.path.abspath(path_str)
+        
+        return model_path
+    
+    def _find_ollama_gguf(self, model_name: str) -> Optional[str]:
+        """Find GGUF file for an Ollama model."""
+        import subprocess
+        import os
+        from pathlib import Path
+        
+        if os.name == 'nt':
+            base = Path(os.environ.get('USERPROFILE', '~'))
+        else:
+            base = Path.home()
+        
+        ollama_models = base / '.ollama' / 'models'
+        
+        if not ollama_models.exists():
+            return None
+        
+        model_gguf = None
+        for gguf in ollama_models.rglob('*.gguf'):
+            if model_name.lower() in str(gguf).lower():
+                if model_gguf is None or gguf.stat().st_size > model_gguf.stat().st_size:
+                    model_gguf = gguf
+        
+        if model_gguf:
+            return str(model_gguf)
+        
+        try:
+            result = subprocess.run(
+                ['ollama', 'list'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if model_name in line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            model_id = parts[1]
+                            manifest_path = ollama_models / 'manifests' / 'registry.ollama.ai' / model_name
+                            if not model_name.startswith('library/'):
+                                manifest_path = ollama_models / 'manifests' / 'registry.ollama.ai' / 'library' / model_name
+        except Exception as e:
+            self.logger.debug(f"Could not run ollama list: {e}")
+        
+        return None
+    
     def prepare_model(
         self,
         model_path: str,
@@ -90,15 +168,16 @@ class Trainer(LoggerMixin):
         """Prepare model for training with LoRA."""
         from transformers import AutoModelForCausalLM, AutoTokenizer
         
-        self.logger.info(f"Loading model from: {model_path}")
+        resolved_path = self._resolve_model_path(model_path)
+        self.logger.info(f"Loading model from: {resolved_path}")
         
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(resolved_path)
         
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
         model = AutoModelForCausalLM.from_pretrained(
-            model_path,
+            resolved_path,
             torch_dtype=torch.float32,
             device_map='cpu',
             low_cpu_mem_usage=True

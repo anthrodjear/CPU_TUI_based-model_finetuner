@@ -137,25 +137,26 @@ class ModelScanner(LoggerMixin):
                 if not line.strip():
                     continue
                 
-                # Handle variable-width columns - find name (first column) and size (second column)
+                # Use regex to parse columns more reliably
                 # Format: NAME  ID  SIZE  MODIFIED
-                # Size can be "4.7GB", "640MB", or "-" for cloud models
-                
-                parts = line.split()
-                if len(parts) < 2:
+                # Handle cloud models with "-" for size
+                match = re.match(r'^(\S+)\s+(\S+)\s+(\S+)\s+(.+)$', line)
+                if not match:
                     continue
                 
-                name = parts[0]
+                name = match.group(1)
+                _id = match.group(2)
+                size_str = match.group(3)
                 
-                # Find size - it's the third element, or "-" for cloud
-                size_str = "0B"
-                if len(parts) >= 3:
-                    size_str = parts[2] if parts[2] != '-' else "0B"
-                elif len(parts) == 2:
-                    size_str = "0B"
+                # Handle cloud models (size is "-")
+                if size_str == '-' or size_str == '0B':
+                    size_gb = 0.0
+                else:
+                    size_gb = self._parse_size(size_str)
                 
-                # Parse size (e.g., "4.7GB", "640MB")
-                size_gb = self._parse_size(size_str)
+                # Validate: if size seems unreasonably large for the model name, cap it
+                # e.g., "0.6b" model shouldn't be 600+ GB
+                size_gb = self._validate_model_size(name, size_gb)
                 
                 # Detect quantization from name
                 quantization = self._detect_quantization_from_name(name)
@@ -198,6 +199,31 @@ class ModelScanner(LoggerMixin):
                 return float(size_str)
         except (ValueError, AttributeError):
             return 0.0
+    
+    def _validate_model_size(self, name: str, size_gb: float) -> float:
+        """Validate and adjust model size based on model name hints."""
+        name_lower = name.lower()
+        
+        # Extract size hint from name (e.g., "0.6b", "7b", "14b")
+        size_hint_match = re.search(r'(\d+\.?\d*)b\b', name_lower)
+        if size_hint_match:
+            hint_params = float(size_hint_match.group(1))
+            
+            # Estimate expected size based on parameters and quantization
+            # Q8 = ~1 byte per parameter, Q5 = ~0.6 bytes, Q4 = ~0.5 bytes
+            expected_min = hint_params * 0.4  # Conservative Q2 estimate
+            expected_max = hint_params * 2.5   # F16 estimate
+            
+            # For embedding models, they're typically smaller
+            if 'embedding' in name_lower:
+                expected_max = hint_params * 0.5
+            
+            # If reported size is way off, use estimated size
+            if size_gb > expected_max * 10:  # More than 10x expected
+                self.logger.warning(f"Unrealistic size {size_gb:.1f}GB for {name}, using estimate")
+                return min(expected_max, 8.0)  # Cap at reasonable max
+        
+        return size_gb
     
     def _detect_quantization_from_name(self, name: str) -> Optional[str]:
         """Detect quantization from model name."""
