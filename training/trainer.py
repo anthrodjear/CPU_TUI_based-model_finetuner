@@ -110,6 +110,12 @@ class Trainer(LoggerMixin):
         
         if ':' in path_str and not os.path.exists(path_str):
             model_name = path_str.split(':')[0]
+            
+            ollama_path = self._get_ollama_model_path(model_name)
+            if ollama_path:
+                self.logger.info(f"Resolved Ollama model via ollama show: {path_str} -> {ollama_path}")
+                return ollama_path
+            
             ollama_path = self._find_ollama_gguf(model_name)
             if ollama_path:
                 self.logger.info(f"Resolved Ollama model: {path_str} -> {ollama_path}")
@@ -129,6 +135,73 @@ class Trainer(LoggerMixin):
             return all_gguf[0]
         
         return model_path
+    
+    def _get_ollama_model_path(self, model_name: str) -> Optional[str]:
+        """Get actual model file path using ollama show command."""
+        import subprocess
+        import os
+        import re
+        from pathlib import Path
+        
+        if os.name == 'nt':
+            base = Path(os.environ.get('USERPROFILE', '~'))
+        else:
+            base = Path.home()
+        
+        ollama_models = base / '.ollama' / 'models'
+        
+        try:
+            result = subprocess.run(
+                ['ollama', 'show', model_name, '--modelfile'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                modelfile = result.stdout
+                
+                gguf_match = re.search(r'FROM\s+(.+?\.gguf)', modelfile, re.IGNORECASE)
+                if gguf_match:
+                    gguf_path = gguf_match.group(1).strip()
+                    if os.path.exists(gguf_path):
+                        return gguf_match.group(1).strip()
+                    
+                    if not os.path.isabs(gguf_path):
+                        full_path = ollama_models / gguf_path
+                        if full_path.exists():
+                            return str(full_path)
+                
+                from_match = re.search(r'^FROM\s+(.+)$', modelfile, re.MULTILINE)
+                if from_match:
+                    model_ref = from_match.group(1).strip()
+                    
+                    manifest_paths = [
+                        ollama_models / 'manifests' / 'registry.ollama.ai' / 'library' / model_name,
+                        ollama_models / 'manifests' / 'registry.ollama.ai' / model_name,
+                    ]
+                    
+                    for manifest_path in manifest_paths:
+                        if manifest_path.exists():
+                            try:
+                                import json
+                                manifest = json.loads(manifest_path.read_text())
+                                if 'layers' in manifest:
+                                    for layer in manifest['layers']:
+                                        if 'mediaType' in layer and 'gguf' in layer.get('mediaType', '').lower():
+                                            if 'digest' in layer:
+                                                digest = layer['digest']
+                                                for f in ollama_models.rglob('*'):
+                                                    if str(f).endswith('.gguf') or '.gguf' in str(f).lower():
+                                                        if str(digest)[:20] in str(f) or f.name:
+                                                            return str(f)
+                            except Exception:
+                                pass
+        
+        except Exception as e:
+            self.logger.debug(f"Could not get ollama model path: {e}")
+        
+        return None
     
     def _find_all_gguf(self) -> list:
         """Find all GGUF files in Ollama models directory."""
